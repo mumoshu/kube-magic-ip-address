@@ -1,0 +1,135 @@
+#!/usr/bin/env bash
+
+# How to test:
+#  MAGIC_IP=169.254.210.210 NAMESPACE=default NODE_NAME=minikube SELECTOR='app=foo' HOST_INTERFACE=cni0 PORT=8200 VERBOSE=1 ./rootfs/kube-magic-ip-assigner
+
+export
+
+if [ "${SELECTOR}" == "" ]; then
+  echo Environment variable \$SELECTOR is not set. 1>&2
+  exit 1
+fi
+
+if [ "${HOST_INTERFACE}" == "" ]; then
+  echo Environment variable \$HOST_INTERFACE is not set. 1>&2
+  exit 1
+fi
+
+if [ "${NAMESPACE}" == "" ]; then
+  echo '[ERROR] Environment variable `NAMESPACE` has no value set. You must set it via PodSpec like described in http://stackoverflow.com/a/34418819' 1>&2
+  exit 1
+fi
+
+if [ "${NODE_NAME}" == "" ]; then
+  echo '[ERROR] Environment variable `NODE_NAME` has no value set. You must set it via PodSpec using the Downward API' 1>&2
+  exit 1
+fi
+
+if [ "${PORT}" == "" -a "${MAGIC_PORT}" == "" ]; then
+  echo Both \$PORT and \$MAGIC_PORT are not set. 1>&2
+  exit 1
+fi
+
+if [ "${PORT}" == "" -a "${TARGET_PORT}" == "" ]; then
+  echo Both \$PORT and \$TARGET_PORT are not set. 1>&2
+  exit 1
+fi
+
+MAGIC_PORT=${MAGIC_PORT:-$PORT}
+TARGET_PORT=${TARGET_PORT:-$PORT}
+
+PROTOCOL=${PROTOCOL:-tcp}
+
+if [ "${PROTOCOL}" != "udp" -a "${PROTOCOL}" != "tcp" ]; then
+  echo Unsupported protocol: ${PROTOCOL} 1>&2
+  exit 1
+fi
+
+# Set VERBOSE=1 to get more output
+VERBOSE=${VERBOSE:-0}
+function verbose () {
+  [[ ${VERBOSE} -eq 1 ]] && return 0 || return 1
+}
+
+echo 'This script polls the Kubernetes API and update iptables to make MAGIC_IP point to the IP address of the target pod residse in the same node.'
+
+set -vx
+
+# Gather some information
+CURL="curl -s --connect-timeout 5"
+AZ_URL=${AZ_URL:-http://169.254.169.254/latest/meta-data/placement/availability-zone}
+AZ=$($CURL ${AZ_URL})
+INSTANCE_ID_URL=${INSTANCE_ID_URL:-http://169.254.169.254/latest/meta-data/instance-id}
+INSTANCE_ID=$($CURL ${INSTANCE_ID_URL})
+if [ -z $CLUSTER ]; then
+  echo "[WARNING] Environment variable CLUSTER has no name set. You can set this to get it reported in the Slack message." 1>&2
+else
+  CLUSTER_INFO=" (${CLUSTER})"
+fi
+
+POLL_INTERVAL=${POLL_INTERVAL:-5}
+
+echo "Polling the Kubernetes API every ${POLL_INTERVAL} second(s)"
+
+while true; do
+  verbose && echo $(date): poll started.
+
+  selector="${SELECTOR}"
+  namespace="${NAMESPACE}"
+  node_name="${NODE_NAME}"
+  pod_ip=$(kubectl get po --selector ${selector} --namespace ${namespace} --output json | jq -r ".items[] | select(.spec.nodeName == \"${node_name}\") | .status.podIP")
+
+  pod_count=$(echo "${pod_ip}" | wc -l)
+
+  if [ ${pod_count} -ne 1 ]; then
+    echo Failed to determine which pod to connect. There are ${pod_count} candidates: ${pod_ip} 1>&2
+    sleep $POLL_INTERVAL
+    continue
+  fi
+
+  TARGET_IP=${pod_ip}
+
+  iptables -L -nv -t nat --line-numbers | tee iptables.out
+
+  rule_index=$(grep $MAGIC_IP iptables.out | tee grep.out | cut -d ' ' -f 1)
+
+  cat iptables.out grep.out
+
+  echo rule_index: ${rule_index}
+
+  if [ "${DELETE}" != "" ]; then
+    iptables -D PREROUTING ${rule_index} -t nat
+    exit 0
+  fi
+
+  if [ "${rule_index}" == "" ] || ! iptables -R PREROUTING ${rule_index} -t nat --dest $MAGIC_IP -p $PROTOCOL --dport $MAGIC_PORT -j DNAT --to-dest $TARGET_IP:$TARGET_PORT -i $HOST_INTERFACE; then
+    iptables -A PREROUTING -t nat --dest $MAGIC_IP -p $PROTOCOL --dport $MAGIC_PORT -j DNAT --to-dest $TARGET_IP:$TARGET_PORT -i $HOST_INTERFACE
+    MESSAGE="Magic IP has been created: $MAGIC_IP:$MAGIC_PORT will be routed to $TARGET_IP:$TARGET_PORT: ${CLUSTER_INFO}: ${NODE_NAME}, Instance: ${INSTANCE_ID}, AZ: ${AZ}"
+  else
+    MESSAGE="Magic IP has been updated: $MAGIC_IP:$MAGIC_PORT will be routed to $TARGET_IP:$TARGET_PORT: ${CLUSTER_INFO}: ${NODE_NAME}, Instance: ${INSTANCE_ID}, AZ: ${AZ}"
+  fi
+
+  # Notify Hipchat
+  # Set the HIPCHAT_ROOM_ID & HIPCHAT_AUTH_TOKEN variables below.
+  # Further instructions at https://www.hipchat.com/docs/apiv2/auth
+  if [ "${HIPCHAT_AUTH_TOKEN}" != "" ]; then
+  curl -H "Content-Type: application/json" \
+      -H "Authorization: Bearer $HIPCHAT_AUTH_TOKEN" \
+      -X POST \
+      -d "{\"color\": \"purple\", \"message_format\": \"text\", \"message\": \"${MESSAGE}\" }" \
+      https://api.hipchat.com/v2/room/$HIPCHAT_ROOM_ID/notification
+  fi
+
+  # Notify Slack incoming-webhook
+  # Docs: https://api.slack.com/incoming-webhooks
+  # Setup: https://slack.com/apps/A0F7XDUAZ-incoming-webhooks
+  #
+  # You will have to set SLACK_URL as an environment variable via PodSpec.
+  # The URL should look something like: https://hooks.slack.com/services/T67UBFNHQ/B4Q7WQM52/1ctEoFjkjdjwsa22934
+  #
+  if [ "${SLACK_URL}" != "" ]; then
+  curl -X POST --data "payload={\"text\": \":warning: ${MESSAGE}\"}" ${SLACK_URL}
+  fi
+
+  sleep ${POLL_INTERVAL}
+done
