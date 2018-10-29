@@ -22,7 +22,7 @@ spec:
           securityContext:
             privileged: true
             capabilities:
-              add: [NET_ADMIN]
+              add: [NET_ADMIN, NET_RAW]
           env:
           - name: PORT
             value: "8200"
