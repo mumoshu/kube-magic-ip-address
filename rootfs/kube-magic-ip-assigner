@@ -53,7 +53,9 @@ function verbose () {
 
 echo 'This script polls the Kubernetes API and update iptables to make MAGIC_IP point to the IP address of the target pod residse in the same node.'
 
-set -vx
+if [ ${VERBOSE} -eq 1 ]; then
+  set -vx
+fi
 
 # Gather some information
 CURL="curl -s --connect-timeout 5"
