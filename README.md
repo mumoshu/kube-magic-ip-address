@@ -17,3 +17,18 @@ In contrast to the two alternatives, `magic-ip-address` allows you add meaningfu
 ## How It Works
 
 Under the hood, `magic-ip-address` periodically polls the Kubernetes API to find one of targeted daemonset pods that are collocated on the same node as the `magic-ip-address` pod, by matching the pod selector. The targeted daemonset pods are assigned the magic IP address like `169.254.210.210`, which can then be accessed by other pods.
+
+## Developping kube-magic-ip-address
+
+Once you've updated your scripts or Dockerfile, rebuild the docker image and push it by running:
+
+```
+$ emacs Makefile
+
+# Bump APP_VERSION in the Makefile and then...
+
+$ eval $(minikube docker-env)
+$ dvm detect
+
+$ make build publish
+```

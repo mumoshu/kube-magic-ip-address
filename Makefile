@@ -1,4 +1,4 @@
-APP_VERSION ?= 0.9.0
+APP_VERSION ?= 0.9.1
 
 REPOSITORY ?= mumoshu/kube-magic-ip-assigner
 TAG ?= $(APP_VERSION)-$(KUBE_VERSION)
