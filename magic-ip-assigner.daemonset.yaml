@@ -35,6 +35,7 @@ spec:
           - name: HOST_INTERFACE
             value: cni0
           - name: VERBOSE
+            # Set "0" or omit to reduce logs
             value: "1"
           - name: NAMESPACE
             valueFrom:
